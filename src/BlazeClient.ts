@@ -10,7 +10,7 @@ const keepalive = Buffer.from('00000000000000000000000000800000', 'hex');
 
 export class BlazeSocket extends EventEmitter {
     #socket: TLSSocket;
-    #id = 1;
+    #id = 0;
     #logger: Debugger;
     host: string;
     user: string;
@@ -122,6 +122,7 @@ export class BlazeSocket extends EventEmitter {
         const { id, method, length } = Blaze.decode(this.#header);
         this.#packetSize = length;
         this.#method = method;
+        this.emit('packet', { id, method, length });
         this.#logger(`Receive packet ${this.#method}(${id})`, length > 0x100000 ? `${(length / 0x100000).toFixed(2)}MB` : `${(length / 0x400).toFixed(2)}KB`);
         this._concatPacket(buffer.subarray(16));
     }
@@ -146,13 +147,14 @@ export class BlazeSocket extends EventEmitter {
 }
 
 let poolId = 0;
-export class BlazePool {
-    #sockets: BlazeSocket[] = [];
+export class BlazePool extends EventEmitter {
+    sockets: BlazeSocket[] = [];
     #available: BlazeSocket[] = [];
     #queue = [];
     #logger = Debugger(`blaze:pool-${poolId++}`);
 
     constructor() {
+        super();
         this.#logger('Pool created');
     }
 
@@ -167,17 +169,20 @@ export class BlazePool {
                 this.#logger(`Add socket [${socket.user}] fail`, err);
                 reject(err);
             };
+            socket.on('packet', ({ id, method, length }) => this.emit('packet', { id, method, length, socket }));
             socket.once('close', close);
             socket.once('connect', () => {
                 socket.off('close', close);
                 this.#logger(`Socket [${socket.user}] added`);
-                this.#sockets.push(socket);
+                this.emit('connect', { socket });
+                this.sockets.push(socket);
                 resolve(true);
                 this._release(socket);
-                socket.once('close', () => {
+                socket.once('close', (err) => {
                     retry();
                     this.#logger(`Socket [${socket.user}] closed`);
-                    if (this.#sockets.includes(socket)) this.#sockets.splice(this.#sockets.indexOf(socket), 1);
+                    this.emit('close', { err, socket });
+                    if (this.sockets.includes(socket)) this.sockets.splice(this.sockets.indexOf(socket), 1);
                     if (this.#available.includes(socket)) this.#available.splice(this.#available.indexOf(socket), 1);
                 });
             });
@@ -210,7 +215,7 @@ export class BlazePool {
     }
 
     private _release(socket: BlazeSocket) {
-        if (!this.#sockets.includes(socket)) return;
+        if (!this.sockets.includes(socket)) return;
         if (this.#queue.length) {
             this.#queue.shift()(socket);
         } else {

@@ -1,12 +1,8 @@
 {
   "name": "blaze",
-  "version": "0.0.1",
-  "description": "",
+  "version": "0.0.2",
+  "description": "Battlefield 1 Blaze",
   "main": "dist/index.js",
-  "scripts": {
-    "lint": "eslint src --ext ts --fix",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
   "author": "",
   "license": "ISC",
   "dependencies": {
