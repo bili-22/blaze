@@ -4,9 +4,10 @@ import { Agent } from 'https';
 import tls, { TLSSocket } from 'tls';
 import Debugger from 'debug';
 import agent from 'superagent';
-import { Blaze, BlazePacket } from './Blaze';
+import { Blaze, BlazePacket, PacketType } from './Blaze';
 
-const keepalive = Buffer.from('00000000000000000000000000800000', 'hex');
+const ping = Buffer.alloc(16);
+ping[13] = PacketType.Ping;
 
 export class BlazeSocket extends EventEmitter {
     #socket: TLSSocket;
@@ -58,7 +59,7 @@ export class BlazeSocket extends EventEmitter {
                 this.#logger(`Authenticated as ${this.user}`);
                 this.#logger = Debugger(`blaze:${this.user}`);
                 this.emit('connect', ({ host: this.host, user: this.user, personaId: this.personaId }));
-                const interval = setInterval(() => { this.#socket.write(keepalive); }, 30000);
+                const interval = setInterval(() => { this.#socket.write(ping); }, 30000);
                 this.once('close', (err) => {
                     this.#closed = true;
                     this.#socket._destroy(err, () => { });
@@ -106,7 +107,9 @@ export class BlazeSocket extends EventEmitter {
     #packetSize = 0;
     #header: Buffer;
     #method: string;
+    #timestamp: number;
     #temp = Buffer.alloc(0);
+    #timeout: NodeJS.Timeout;
 
     private _handlePacket(buffer: Buffer) {
         if (!this.#packetSize) {
@@ -117,17 +120,22 @@ export class BlazeSocket extends EventEmitter {
     }
 
     private _readInfo(buffer: Buffer) {
-        if (buffer[13] === 0xA0) return;
+        if (buffer[13] === PacketType.Pong) return;
         this.#header = buffer.subarray(0, 16);
         const { id, method, length } = Blaze.decode(this.#header);
         this.#packetSize = length;
         this.#method = method;
+        this.#timestamp = Date.now();
         this.emit('packet', { id, method, length });
         this.#logger(`Receive packet ${this.#method}(${id})`, length > 0x100000 ? `${(length / 0x100000).toFixed(2)}MB` : `${(length / 0x400).toFixed(2)}KB`);
         this._concatPacket(buffer.subarray(16));
     }
 
     private _concatPacket(buffer: Buffer) {
+        clearTimeout(this.#timeout);
+        this.#timeout = setTimeout(() => {
+            this.emit('close', new Error('timeout'));
+        }, 30000);
         this.#temp = Buffer.concat([this.#temp, buffer]);
         if (this.#temp.length >= this.#packetSize) {
             this._readPacket();
@@ -137,8 +145,9 @@ export class BlazeSocket extends EventEmitter {
     }
 
     private _readPacket() {
+        clearTimeout(this.#timeout);
         const id = this.#header.readInt16BE(11);
-        this.#logger('Success receive packet', `${this.#method}(${id})`);
+        this.#logger('Success receive packet', `${this.#method}(${id})`, `${((this.#packetSize / 0x100000) / ((Date.now() - this.#timestamp) / 1000)).toFixed(2)}mb/s`);
         this.emit(`packet:${id}`, Buffer.concat([this.#header, this.#temp]));
         if (this.#method === 'UserSessions.UserUnauthenticated') { this.emit('close', new Error('user is unauthenticated')); return; }
         this.#packetSize = 0;
@@ -148,8 +157,8 @@ export class BlazeSocket extends EventEmitter {
 
 let poolId = 0;
 export class BlazePool extends EventEmitter {
-    sockets: BlazeSocket[] = [];
-    #available: BlazeSocket[] = [];
+    _sockets: BlazeSocket[] = [];
+    _available: BlazeSocket[] = [];
     #queue = [];
     #logger = Debugger(`blaze:pool-${poolId++}`);
 
@@ -175,15 +184,15 @@ export class BlazePool extends EventEmitter {
                 socket.off('close', close);
                 this.#logger(`Socket [${socket.user}] added`);
                 this.emit('connect', { socket });
-                this.sockets.push(socket);
+                this._sockets.push(socket);
                 resolve(true);
                 this._release(socket);
                 socket.once('close', (err) => {
                     retry();
                     this.#logger(`Socket [${socket.user}] closed`);
                     this.emit('close', { err, socket });
-                    if (this.sockets.includes(socket)) this.sockets.splice(this.sockets.indexOf(socket), 1);
-                    if (this.#available.includes(socket)) this.#available.splice(this.#available.indexOf(socket), 1);
+                    if (this._sockets.includes(socket)) this._sockets.splice(this._sockets.indexOf(socket), 1);
+                    if (this._available.includes(socket)) this._available.splice(this._available.indexOf(socket), 1);
                 });
             });
         });
@@ -205,8 +214,8 @@ export class BlazePool extends EventEmitter {
 
     private _getSocket() {
         return new Promise<BlazeSocket>((resolve) => {
-            if (this.#available.length) {
-                resolve(this.#available.shift());
+            if (this._available.length) {
+                resolve(this._available.shift());
                 return;
             }
             this.#logger('Waiting for socket');
@@ -215,11 +224,11 @@ export class BlazePool extends EventEmitter {
     }
 
     private _release(socket: BlazeSocket) {
-        if (!this.sockets.includes(socket)) return;
+        if (!this._sockets.includes(socket)) return;
         if (this.#queue.length) {
             this.#queue.shift()(socket);
         } else {
-            this.#available.push(socket);
+            this._available.push(socket);
         }
     }
 }

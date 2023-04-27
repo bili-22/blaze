@@ -1,156 +1,28 @@
 import { Commands, Components, Errors, Methods } from './Method';
 
-/*
-    Blaze包解析
-    一个Blaze包的前16字节为报头, 后面为报文
-    报文部分是一个BlazeStruct
-    超过16kb的包会被拆分, 每个16kb
+enum BlazeType {
+    Integer,
+    String,
+    Blob,
+    Struct,
+    List,
+    Map,
+    Union,
+    IntList,
+    ObjectType,
+    ObjectId,
+    Float,
+    Time,
+}
 
-    PacketHeader
-    00 0f 6f c3 00 00 00 04 00 67 00 00 02 20 00 00
-    -----1----- --2-- --3-- --4-- 5- --6-- 7- --8--
-    1. Length - 报文长度
-    2. Empty - 空
-    3. Component - 组件
-    4. Command - 命令
-    5. Empty - 空
-    6. Id - 包ID(原样返回)
-    7. PacketType - 包类型
-    8. Empty - 空
-
-    PacketType
-    00 - SendCommand
-    20 - Result
-    40 - ReceiveMessage
-    80 - SendKeepAlive
-    A0 - ReceiveKeepAlive
-    注: KeepAlive包是一个PacketType为80的空包, 每分钟发一次
-
-    BlazeStruct
-    读三个字节, 解析为TAG
-    读一个字节, 作为[Type]
-    以[Type]为类型读一个值
-    TAG-Type-Value作为一个Element
-    重复以上步骤读取Element, 直到遇到00或文件尾
-
-    Type
-    00 Integer
-    01 String
-    02 Blob
-    03 Struct
-    04 List
-    05 Map
-    06 Union
-    07 IntList
-    08 Double
-    09 Tripple
-    0A Float
-
-    BlazeInteger
-       8E       85       E3       0B
-    10001110 10000101 11100011 00001011
-    每个字节的第一位表示是否还有下一个字节
-    每个字节后七位连接起来就是数值
-    数值的第一位表示正负
-
-    BlazeString
-    读一个BlazeInteger作为[Length], 然后读[Length]个字节作为字符串
-
-    BlazeBlob
-    读一个BlazeInteger作为[Length], 然后读[Length]个字节并存储
-
-    BlazeList
-    读一个字节, 作为[Type]
-    读一个BlazeInteger作为[Size]
-    以[Type]为类型读[Size]个值
-
-    BlazeMap
-    读一个字节, 作为[KeyType]
-    读一个字节, 作为[ValueType]
-    读一个BlazeInteger作为[Size]
-    以[KeyType]读取一次作为键
-    以[ValueType]读取一次作为值
-    重复以上两步, 读取[Size]个键值对
-
-    BlazeUnion
-    读一个字节, 作为[UnionType]
-    若[UnionType]为FF, 则Union为空
-    若不为FF, 则读一个Element作为值
-
-    BlazeIntList
-    读一个BlazeInteger作为[Size]
-    读[Size]个BlazeInteger作为列表
-
-    BlazeDouble
-    读两个BlazeInteger作为Double
-
-    BlazeTripple
-    读三个BlazeInteger作为Tripple
-
-    BlazeFloat
-    读一个Float(四字节)
-
-    TAG Decompression
-    三个字节的TAG
-    > D2 5C F4
-    > 11010010 01011100 11110100
-    将三个八位的字节分成四个六位的字节
-    > 110100 100101 110011 110100
-    每个字节加32(100000)
-    > 1010100 1000101 1010011 1010100
-    > 54 45 53 54
-    转换为四个ASCII字符
-    > TEST
-*/
-
-const BlazeType = {
-    0x00: 'Integer',
-    0x01: 'String',
-    0x02: 'Blob',
-    0x03: 'Struct',
-    0x04: 'List',
-    0x05: 'Map',
-    0x06: 'Union',
-    0x07: 'IntList',
-    0x08: 'Double',
-    0x09: 'Tripple',
-    0x0A: 'Float',
-
-    Integer: 0x00,
-    String: 0x01,
-    Blob: 0x02,
-    Struct: 0x03,
-    List: 0x04,
-    Map: 0x05,
-    Union: 0x06,
-    IntList: 0x07,
-    Double: 0x08,
-    Tripple: 0x09,
-    Float: 0x0A,
-};
-
-const PacketType = {
-    0x00: 'SendCommand',
-    0x20: 'Result',
-    0x40: 'ReceiveMessage',
-    0x60: 'Error',
-    0x80: 'SendKeepAlive',
-    0xA0: 'ReceiveKeepAlive',
-
-    SendCommand: 0x00,
-    Result: 0x20,
-    ReceiveMessage: 0x40,
-    SendKeepAlive: 0x80,
-    ReceiveKeepAlive: 0xA0,
-};
-
-const TypeCategory = {
-    SendCommand: 'Command',
-    Result: 'Command',
-    ReceiveMessage: 'Message',
-    SendKeepAlive: 'KeepAlive',
-    ReceiveKeepAlive: 'KeepAlive',
-};
+export enum PacketType {
+    Command = 0x00,
+    Result = 0x20,
+    Message = 0x40,
+    Error = 0x60,
+    Ping = 0x80,
+    Pong = 0xA0,
+}
 
 const tags = new Map<string, string>();
 
@@ -160,29 +32,47 @@ export interface BlazePacket {
     component?: number;
     command?: number;
     id?: number;
-    type?: number;
+    type?: string;
     data?: Record<string, any>;
     error?: BlazeError
 }
 
+export class BlazeError extends Error {
+    public component: string;
+    public description: number;
+    public details: string;
+    constructor({
+        component, name, description, details,
+    }) {
+        super(name);
+        this.name = 'BlazeError';
+        this.component = component;
+        if (description) this.description = description;
+        if (details) this.details = details;
+    }
+}
+
 export class Blaze {
-    /* eslint-disable */
-    static decode(buffer: Buffer): BlazePacket {
+    static decode(buffer: Buffer, typed = true): BlazePacket {
         let offset = 16;
         const length = buffer.readInt32BE(0) + buffer.readInt16BE(4);
-        const type = PacketType[buffer[13]] || buffer[13];
+        const type = buffer[13];
         const component = buffer.readInt16BE(6);
         const command = buffer.readInt16BE(8);
         const id = buffer.readInt16BE(11);
         let method: string;
-        if (TypeCategory[type] === 'KeepAlive') {
+        if (type === PacketType.Ping || type === PacketType.Pong) {
             method = 'KeepAlive';
         } else {
-            method = `${Components[component] || component}.${Commands[Components[component]]?.[TypeCategory[type] || 'Command']?.[command] || command}`;
+            method = Components[component] ?? component;
+            method += '.';
+            method += Commands[Components[component]]?.[type === PacketType.Message ? 'Message' : type === PacketType.Error ? 'Error' : 'Command']?.[command] || command;
         }
 
-        if (buffer.length === 16) return {
-            method, type, id, length
+        if (buffer.length === 16) {
+            return {
+                method, type: PacketType[type], id, length,
+            };
         }
 
         const tagMap = new Map<string, any>();
@@ -194,15 +84,18 @@ export class Blaze {
             if (code >= 16384) code -= 16384;
             const error = new BlazeError(Errors[`${component}.${code}`] || { component: Components[component] || component, name: code });
             return {
-                method, type, id, length, error,
+                method, type: PacketType[type], id, length, error,
             };
         }
         return {
-            method, type, id, length, data: new Proxy(data, {
+            method,
+            type: PacketType[type],
+            id,
+            length,
+            data: new Proxy(data, {
                 get(target, prop, receiver) {
-                    // if (prop === 'raw') return buffer;
-                    return Reflect.has(target, prop) ? Reflect.get(target, prop, receiver) : tagMap.get(prop.toString().toLowerCase());
-                }
+                    return Reflect.has(target, prop) ? Reflect.get(target, prop, receiver) : tagMap.get(prop.toString().padEnd(4, ' '));
+                },
             }),
         };
 
@@ -220,150 +113,157 @@ export class Blaze {
             return tag;
         }
 
-        function parseBlock(type, header?) {
+        function parseBlock(type: BlazeType) {
             switch (type) {
-                case "Integer": {
-                    return parseInteger()
+                case BlazeType.Integer: {
+                    return parseInteger();
                 }
-                case "String": {
-                    return parseString()
+                case BlazeType.String: {
+                    return parseString();
                 }
-                case "Struct": {
-                    return parseStruct()
+                case BlazeType.Struct: {
+                    return parseStruct();
                 }
-                case "Blob": {
-                    return parseBlob()
+                case BlazeType.Blob: {
+                    return parseBlob();
                 }
-                case "List": {
-                    return parseList(header)
+                case BlazeType.List: {
+                    return parseList();
                 }
-                case "Map": {
-                    return parseMap(header)
+                case BlazeType.Map: {
+                    return parseMap();
                 }
-                case "Union": {
-                    return parseUnion(header)
+                case BlazeType.Union: {
+                    return parseUnion();
                 }
-                case "Double": {
-                    return parseDouble()
+                case BlazeType.ObjectType: {
+                    return parseObjectType();
                 }
-                case "Tripple": {
-                    return parseTripple()
+                case BlazeType.ObjectId: {
+                    return parseObjectId();
                 }
-                case "IntList": {
-                    return parseIntList()
+                case BlazeType.IntList: {
+                    return parseIntList();
                 }
-                case "Float": {
-                    return parseFloat()
+                case BlazeType.Float: {
+                    return parseFloat();
                 }
                 default: {
-                    throw new Error("未知类型")
+                    throw new Error('未知类型');
                 }
             }
         }
 
         function parseStruct() {
-            const data = {}
-            while (buffer[offset]) {
-                const header = {
-                    tag: decodeTag(buffer.subarray(offset, offset += 3).toString("hex")),
-                    type: BlazeType[buffer[offset++]]
-                }
-                const result = parseBlock(header.type, header)
-                data[`${header.tag.padEnd(4, " ")} ${header.type}`] = result
-                if (!data[header.tag.trim().toLowerCase()]) Object.defineProperty(data, header.tag.trim().toLowerCase(), { value: result })
-                tagMap.set(header.tag.trim().toLowerCase(), result)
+            const data = {};
+            if (buffer[offset] === 2) {
+                data['_endFlag'] = true;
+                offset++;
             }
-            offset++
-            return data
+            while (buffer[offset]) {
+                const tag = decodeTag(buffer.subarray(offset, offset += 3).toString('hex'));
+                const type = buffer[offset++];
+                const name = typed
+                    ? type === BlazeType.List
+                        ? `${tag} ${BlazeType[type]}<${BlazeType[buffer[offset]]}>`
+                        : type === BlazeType.Map
+                            ? `${tag} ${BlazeType[type]}<${BlazeType[buffer[offset]]}, ${BlazeType[buffer[offset + 1]]}>`
+                            : `${tag} ${BlazeType[type]}`
+                    : tag.trimEnd();
+                const result = parseBlock(type);
+                data[name] = result;
+                if (typed && !data[tag.trimEnd()]) Object.defineProperty(data, tag.trimEnd(), { value: result });
+                if (!tagMap.has(tag)) tagMap.set(tag, result);
+            }
+            offset++;
+            return data;
         }
 
-        function parseUnion(header) {
-            const data = {}
-            const unionType = buffer[offset++]
-            if (unionType === 127) return data
-            header.type += '<' + BlazeType[unionType] + '>'
-            const uHeader = {
-                tag: decodeTag(buffer.subarray(offset, offset += 3).toString("hex")),
-                type: BlazeType[buffer[offset++]]
-            }
-            const result = parseBlock(uHeader.type, uHeader)
-            data[`${uHeader.tag.padEnd(4, " ")} ${uHeader.type}`] = result
-            return data
+        function parseUnion() {
+            const data = {};
+            const activeMemberIndex = buffer[offset++];
+            if (activeMemberIndex === 127) return data;
+            data['_activeMemberIndex'] = activeMemberIndex.toString(16).padStart(2, '0');
+            const tag = decodeTag(buffer.subarray(offset, offset += 3).toString('hex'));
+            const type = buffer[offset++];
+            const name = typed ? `${tag} ${BlazeType[type]}` : tag.trimEnd();
+            const result = parseBlock(type);
+            data[name] = result;
+            if (typed && !data[tag.trimEnd()]) Object.defineProperty(data, tag.trimEnd(), { value: result });
+            if (!tagMap.has(tag)) tagMap.set(tag, result);
+            return data;
         }
 
         function parseInteger() {
-            let i = 1, n = buffer[offset++], negative = n & 64
+            let i = 1; let n = buffer[offset++];
+            const negative = n & 64;
             if (n > 127) {
-                n = n & 127
+                n &= 127;
                 do {
-                    n += (buffer[offset] & 127) * (128 ** i++ * 0.5)
-                } while (buffer[offset++] > 127)
+                    n += (buffer[offset] & 127) * (128 ** i++ * 0.5);
+                } while (buffer[offset++] > 127);
             }
-            if (negative) return -n
-            return n
+            if (negative) return -n;
+            return n;
         }
 
         function parseString() {
-            const length = parseInteger()
-            return buffer.subarray(offset, (offset += length) - 1).toString()
+            const length = parseInteger();
+            offset += length;
+            return buffer.subarray(offset - length, offset - 1).toString();
         }
 
         function parseBlob() {
-            const length = parseInteger()
-            return buffer.subarray(offset, (offset += length) - 1).toString("hex")
+            const length = parseInteger();
+            return buffer.subarray(offset - length, offset - 1).toString('hex');
         }
 
-        function parseList(header) {
-            const type = BlazeType[buffer[offset++]]
-            const size = parseInteger()
-            const data = []
-            if (type === 'Struct' && buffer[offset] === 2) {
-                header.type += "<Struct2>"
-                offset++
-            } else {
-                header.type += '<' + type + '>'
-            }
+        function parseList() {
+            const type = buffer[offset++];
+            const size = parseInteger();
+            const data = [];
             for (let i = 0; i < size; i++) {
-                data.push(parseBlock(type))
+                data.push(parseBlock(type));
             }
-            return data
+            return data;
         }
 
-        function parseIntList() {
-            const size = parseInteger()
-            const data = []
+        function parseIntList(): number[] {
+            const size = parseInteger();
+            const data = [];
             for (let i = 0; i < size; i++) {
-                data.push(parseInteger())
+                data.push(parseInteger());
             }
-            return data
+            return data;
         }
 
-        function parseMap(header) {
-            const keyType = BlazeType[buffer[offset++]]
-            const valType = BlazeType[buffer[offset++]]
-            header.type += '<' + keyType + ', ' + valType + '>'
-            const size = parseInteger()
-            const data = {}
+        function parseMap() {
+            const keyType = buffer[offset++];
+            const valType = buffer[offset++];
+            const size = parseInteger();
+            const data = {};
             for (let i = 0; i < size; i++) {
-                data[parseBlock(keyType) as string] = parseBlock(valType)
+                data[parseBlock(keyType) as string] = parseBlock(valType);
             }
-            return data
+            return data;
         }
 
-        function parseDouble() {
-            const data = [parseInteger(), parseInteger()]
-            return data
+        function parseObjectType() {
+            const data: [number, number] = [parseInteger(), parseInteger()];
+            return data;
         }
 
-        function parseTripple() {
-            const data = [parseInteger(), parseInteger(), parseInteger()]
-            return data
+        function parseObjectId() {
+            const data: [number, number, number] = [parseInteger(), parseInteger(), parseInteger()];
+            return data;
         }
 
         function parseFloat() {
-            return buffer.readFloatBE((offset += 4) - 4)
+            offset += 4;
+            return buffer.readFloatBE(offset - 4);
         }
     }
+    /* eslint-disable */
 
     static encode(packet) {
         const header = Buffer.alloc(16);
@@ -374,7 +274,7 @@ export class Blaze {
         // Id
         header.writeUInt16BE(packet.id, 11);
         // Type
-        header[13] = PacketType[packet.type] || 0;
+        header[13] = PacketType[packet.type] as unknown as number ?? 0;
 
         let hex = '';
         writeStruct(packet.data || {}, false);
@@ -428,15 +328,15 @@ export class Blaze {
                     break;
                 }
                 case 'Union': {
-                    value = writeUnion(value, key);
+                    value = writeUnion(value);
                     break;
                 }
-                case 'Double': {
-                    value = writeDouble(value);
+                case 'ObjectType': {
+                    value = writeObjectType(value);
                     break;
                 }
-                case 'Tripple': {
-                    value = writeTripple(value);
+                case 'ObjectId': {
+                    value = writeObjectId(value);
                     break;
                 }
                 case 'IntList': {
@@ -454,6 +354,7 @@ export class Blaze {
         }
 
         function writeStruct(object, end = true) {
+            if (object._endFlag) { hex += '02'; delete object._endFlag };
             Object.entries(object).forEach(({ 0: key, 1: value }) => {
                 hex += encodeTag(key.slice(0, 4)); // tag
                 hex += `0${BlazeType[key.split(/ +|</)[1]].toString(16)}`; // type
@@ -501,8 +402,8 @@ export class Blaze {
 
         function writeMap(map, key) {
             map = Object.entries(map);
-            hex += `0${BlazeType[key.split(/<|, |>/)[1]].toString(16)}`;
-            hex += `0${BlazeType[key.split(/<|, |>/)[2]].toString(16)}`;
+            hex += `0${(BlazeType[key.split(/<|, |>/)[1]] as unknown as number).toString(16)}`;
+            hex += `0${(BlazeType[key.split(/<|, |>/)[2]] as unknown as number).toString(16)}`;
             writeInteger(map.length); // size
             map.forEach(({ 0: k, 1: value }) => {
                 writeBlock(key.split(/<|, |>/)[1], k);
@@ -515,20 +416,21 @@ export class Blaze {
             list.forEach((item) => writeInteger(item));
         }
 
-        function writeUnion(data, key) {
-            if (key.split(/<|>/)[1]) {
-                hex += `0${BlazeType[key.split(/<|>/)[1]].toString(16)}`;
+        function writeUnion(data) {
+            if (data._activeMemberIndex) {
+                hex += data._activeMemberIndex;
+                delete data._activeMemberIndex;
                 writeStruct(data, false);
             } else {
                 hex += '7f';
             }
         }
 
-        function writeDouble(list: [number, number]) {
+        function writeObjectType(list: [number, number]) {
             list.forEach(writeInteger);
         }
 
-        function writeTripple(list: [number, number, number]) {
+        function writeObjectId(list: [number, number, number]) {
             list.forEach(writeInteger);
         }
 
@@ -539,19 +441,4 @@ export class Blaze {
         }
     }
     /* eslint-enable */
-}
-
-export class BlazeError extends Error {
-    public component: string;
-    public description: number;
-    public details: string;
-    constructor({
-        component, name, description, details,
-    }) {
-        super(name);
-        this.name = 'BlazeError';
-        this.component = component;
-        if (description) this.description = description;
-        if (details) this.details = details;
-    }
 }

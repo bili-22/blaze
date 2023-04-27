@@ -22,6 +22,7 @@ rules:
   function-call-argument-newline: 0
   react/function-component-definition: 0
   '@typescript-eslint/dot-notation': 0
+  '@typescript-eslint/no-use-before-define': 0
   '@typescript-eslint/no-implied-eval': 0
   '@typescript-eslint/no-throw-literal': 0
   '@typescript-eslint/return-await': 0
