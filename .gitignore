@@ -103,3 +103,8 @@ dist
 
 # TernJS port file
 .tern-port
+
+# yarn file
+.yarnrc.yml
+.yarn-metadata.json
+yarn.lock
