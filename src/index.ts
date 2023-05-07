@@ -1,3 +1,3 @@
 import { Blaze, BlazePacket } from './Blaze';
-import { BlazePool, BlazeSocket } from './BlazeClient';
-export { Blaze, BlazePacket, BlazePool, BlazeSocket };
+import { BlazeSocket } from './BlazeSocket';
+export { Blaze, BlazePacket, BlazeSocket };

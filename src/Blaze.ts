@@ -66,7 +66,7 @@ export class Blaze {
         } else {
             method = Components[component] ?? component;
             method += '.';
-            method += Commands[Components[component]]?.[type === PacketType.Message ? 'Message' : type === PacketType.Error ? 'Error' : 'Command']?.[command] || command;
+            method += Commands[Components[component]]?.[type === PacketType.Message ? 'Message' : 'Command']?.[command] || command;
         }
 
         if (buffer.length === 16) {
@@ -78,9 +78,9 @@ export class Blaze {
         const tagMap = new Map<string, any>();
 
         const data = parseStruct() as Record<string, any>;
-        if (data.errc) {
-            const component = data.errc & 0xFFFF;
-            let code = data.errc >> 16;
+        if (data.ERRC) {
+            const component = data.ERRC & 0xFFFF;
+            let code = data.ERRC >> 16;
             if (code >= 16384) code -= 16384;
             const error = new BlazeError(Errors[`${component}.${code}`] || { component: Components[component] || component, name: code });
             return {
@@ -149,7 +149,7 @@ export class Blaze {
                     return parseFloat();
                 }
                 default: {
-                    throw new Error('未知类型');
+                    throw new Error(`未知类型 ${type.toString(16).padStart(2, '0')}`);
                 }
             }
         }
@@ -195,26 +195,52 @@ export class Blaze {
         }
 
         function parseInteger() {
-            let i = 1; let n = buffer[offset++];
-            const negative = n & 64;
-            if (n > 127) {
-                n &= 127;
-                do {
-                    n += (buffer[offset] & 127) * (128 ** i++ * 0.5);
-                } while (buffer[offset++] > 127);
+            let i = 1;
+            let n: number | bigint = 0;
+
+            const neg = buffer[offset] & 0b01000000;
+            n |= buffer[offset] & 0b00111111;
+
+            // 32位以内
+            if (!(buffer[offset++] & 0b10000000)) {
+                return neg ? -n : n;
             }
-            if (negative) return -n;
-            return n;
+
+            for (; i < 4; i++) {
+                n |= ((buffer[offset] & 0b01111111) << (7 * i - 1));
+                if (!(buffer[offset++] & 0b10000000)) {
+                    return neg ? -n : n;
+                }
+            }
+
+            // MAX_SAFE_INTEGER以内
+            for (; i < 7; i++) {
+                n += ((buffer[offset] & 0b01111111) * 2 ** (7 * i - 1));
+                if (!(buffer[offset++] & 0b10000000)) {
+                    return neg ? -n : n;
+                }
+            }
+
+            // 64位
+            n = BigInt(n);
+            let j = 7n;
+            for (; true; i++, j++) {
+                n |= ((BigInt(buffer[offset]) & 0b01111111n) << (7n * j - 1n));
+                if (!(buffer[offset++] & 0b10000000)) {
+                    if (n < Number.MAX_SAFE_INTEGER) n = Number(n);
+                    return neg ? -n : n;
+                }
+            }
         }
 
         function parseString() {
-            const length = parseInteger();
+            const length = parseInteger() as number;
             offset += length;
             return buffer.subarray(offset - length, offset - 1).toString();
         }
 
         function parseBlob() {
-            const length = parseInteger();
+            const length = parseInteger() as number;
             return buffer.subarray(offset - length, offset - 1).toString('hex');
         }
 
@@ -249,12 +275,12 @@ export class Blaze {
         }
 
         function parseObjectType() {
-            const data: [number, number] = [parseInteger(), parseInteger()];
+            const data: [number, number] = [parseInteger() as number, parseInteger() as number];
             return data;
         }
 
         function parseObjectId() {
-            const data: [number, number, number] = [parseInteger(), parseInteger(), parseInteger()];
+            const data: [number, number, number | bigint] = [parseInteger() as number, parseInteger() as number, parseInteger()];
             return data;
         }
 
@@ -268,9 +294,9 @@ export class Blaze {
     static encode(packet) {
         const header = Buffer.alloc(16);
         // Component
-        header.writeUInt16BE(Methods[packet.method]?.[0] || +packet.method.split('.')[0], 6);
+        header.writeUInt16BE(Methods[packet.method]?.[0] ?? +packet.method.split('.')[0], 6);
         // Command
-        header.writeUInt16BE(Methods[packet.method]?.[1] || +packet.method.split('.')[1], 8);
+        header.writeUInt16BE(Methods[packet.method]?.[1] ?? +packet.method.split('.')[1], 8);
         // Id
         header.writeUInt16BE(packet.id, 11);
         // Type
@@ -303,15 +329,14 @@ export class Blaze {
                     break;
                 }
                 case 'Boolean': {
-                    value = writeInteger(+value);
+                    value = writeInteger(value ? 1 : 0);
                     break;
                 }
                 case 'String': {
                     value = writeString(value);
                     break;
                 }
-                case 'Struct':
-                case 'Struct2': {
+                case 'Struct': {
                     value = writeStruct(value);
                     break;
                 }
@@ -363,20 +388,54 @@ export class Blaze {
             if (end) hex += '00';
         }
 
-        function writeInteger(n: number) {
-            let negative = false;
-            n = +n;
-            if (n < 0) { negative = true; n = -n; }
-            const temp = [];
-            temp.push((n % 64) + 128);
-            n = Math.floor(n / 64);
-            while (n > 0) {
-                temp.push((n % 128) + 128);
-                n = Math.floor(n / 128);
+        function writeInteger(n: number | bigint | boolean | string) {
+            switch (typeof n) {
+                case 'boolean': {
+                    hex += (n ? '01' : '00');
+                    break;
+                }
+                case 'number': {
+                    let negative = false;
+                    n = +n;
+                    if (n < 0) { negative = true; n = -n; }
+                    const temp: number[] = [];
+                    temp.push((n % 64) + 128);
+                    n = Math.floor(n / 64);
+                    while (n > 0) {
+                        temp.push((n % 128) + 128);
+                        n = Math.floor(n / 128);
+                    }
+                    if (negative) temp[0] += 64;
+                    temp[temp.length - 1] -= 128;
+                    hex += Buffer.from(temp).toString('hex');
+                    break;
+                }
+                case 'bigint': {
+                    const negative = n < 0n;
+                    if (negative) n = -n;
+                    hex += ((n > 63 ? 128n : 0n) + (negative ? 64n : 0n) + (n & 63n)).toString(16).padStart(2, '0');
+                    n >>= 6n;
+                    while (n) {
+                        hex += ((n > 127n ? 128n : 0n) + (n & 127n)).toString(16).padStart(2, '0');
+                        n >>= 7n;
+                    }
+                    break;
+                }
+                case 'string': {
+                    const val = +n;
+                    if (Number.isNaN(val)) {
+                        throw new Error('Not a vaild integer');
+                    }
+                    if (val > Number.MAX_SAFE_INTEGER || val < Number.MIN_SAFE_INTEGER) {
+                        writeInteger(BigInt(n));
+                    } else {
+                        writeInteger(+n);
+                    }
+                    break;
+                }
+                default:
+                    throw new Error('Not a vaild integer');
             }
-            if (negative) temp[0] += 64;
-            temp[temp.length - 1] -= 128;
-            hex += Buffer.from(temp).toString('hex');
         }
 
         function writeString(text: string) {
@@ -400,7 +459,7 @@ export class Blaze {
             list.forEach((item) => writeBlock(key.split(/<|>/)[1], item));
         }
 
-        function writeMap(map, key) {
+        function writeMap(map: Record<string, any>, key: string) {
             map = Object.entries(map);
             hex += `0${(BlazeType[key.split(/<|, |>/)[1]] as unknown as number).toString(16)}`;
             hex += `0${(BlazeType[key.split(/<|, |>/)[2]] as unknown as number).toString(16)}`;

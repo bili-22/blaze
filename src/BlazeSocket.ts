@@ -9,6 +9,15 @@ import { Blaze, BlazePacket, PacketType } from './Blaze';
 const ping = Buffer.alloc(16);
 ping[13] = PacketType.Ping;
 
+enum BlazeServerURL {
+    BF1 = 'https://winter15.gosredirector.ea.com:42230/redirector/getServerInstance',
+    BFV = 'https://spring18.gosredirector.ea.com:42230/redirector/getServerInstance',
+}
+enum BlazeServerREQ {
+    BF1 = '<serverinstancerequest><name>battlefield-1-pc</name><connectionprofile>standardSecure_v4</connectionprofile></serverinstancerequest>',
+    BFV = '<serverinstancerequest><name>battlefield-casablanca-pc</name><connectionprofile>standardSecure_v4</connectionprofile></serverinstancerequest>',
+}
+
 export class BlazeSocket extends EventEmitter {
     #socket: TLSSocket;
     #id = 0;
@@ -18,17 +27,17 @@ export class BlazeSocket extends EventEmitter {
     personaId: number;
     #closed = false;
 
-    constructor(authcode: string) {
+    constructor(authcode: string, game = 'BF1') {
         if (!authcode) throw new Error('No authcode provided');
         super();
         this.#logger = Debugger(`blaze:temp-${authcode.slice(-4)}`);
         this.#logger('BlazeSocket created');
-        agent.post('https://winter15.gosredirector.ea.com:42230/redirector/getServerInstance')
+        agent.post(BlazeServerURL[game])
             .agent(new Agent({ secureOptions: crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT }))
             .disableTLSCerts()
             .set('Content-Type', 'application/xml')
             .set('Accept', 'application/json')
-            .send('<serverinstancerequest><name>battlefield-1-pc</name><connectionprofile>standardSecure_v4</connectionprofile></serverinstancerequest>')
+            .send(BlazeServerREQ[game])
             .then(({ body: { address: { ipAddress } } }) => ({ host: ipAddress.hostname, port: ipAddress.port }))
             .then(({ host, port }) => {
                 this.host = `${host}:${port}`;
@@ -54,8 +63,8 @@ export class BlazeSocket extends EventEmitter {
                 });
             })
             .then((data) => {
-                this.personaId = data.buid;
-                this.user = data.dsnm;
+                this.personaId = data.BUID;
+                this.user = data.DSNM;
                 this.#logger(`Authenticated as ${this.user}`);
                 this.#logger = Debugger(`blaze:${this.user}`);
                 this.emit('connect', ({ host: this.host, user: this.user, personaId: this.personaId }));
@@ -65,9 +74,10 @@ export class BlazeSocket extends EventEmitter {
                     this.#socket._destroy(err, () => { });
                     this.#logger(`Connection closed${err ? ` because ${err.message}` : ''}`);
                     clearInterval(interval);
+                    clearTimeout(this.#timeout);
                 });
             })
-            .catch((err) => this.emit('close', err));
+            .catch((err) => { this.#logger('Authentication failed', err); this.emit('close', err); });
     }
 
     public send(packet: BlazePacket, callback?: (err: Error | null, data: any) => void, decode = true) {
@@ -79,7 +89,7 @@ export class BlazeSocket extends EventEmitter {
             const buffer = Blaze.encode(packet);
             this.#socket.write(buffer);
         } catch (error) {
-            callback(new Error('Failed to encode packet'), null);
+            callback(new Error('Packet encoding failed'), null);
             return;
         }
         if (callback) {
@@ -105,10 +115,10 @@ export class BlazeSocket extends EventEmitter {
     }
 
     #packetSize = 0;
-    #header: Buffer;
+    #offset = 0;
     #method: string;
     #timestamp: number;
-    #temp = Buffer.alloc(0);
+    #temp: Buffer;
     #timeout: NodeJS.Timeout;
 
     private _handlePacket(buffer: Buffer) {
@@ -121,13 +131,16 @@ export class BlazeSocket extends EventEmitter {
 
     private _readInfo(buffer: Buffer) {
         if (buffer[13] === PacketType.Pong) return;
-        this.#header = buffer.subarray(0, 16);
-        const { id, method, length } = Blaze.decode(this.#header);
-        this.#packetSize = length;
+        const header = buffer.subarray(0, 16);
+        const { id, method, length } = Blaze.decode(header);
+        this.#temp = Buffer.alloc(length + 16);
+        header.copy(this.#temp);
+        this.#offset = 16;
+        this.#packetSize = length + 16;
         this.#method = method;
         this.#timestamp = Date.now();
-        this.emit('packet', { id, method, length });
-        this.#logger(`Receive packet ${this.#method}(${id})`, length > 0x100000 ? `${(length / 0x100000).toFixed(2)}MB` : `${(length / 0x400).toFixed(2)}KB`);
+        this.emit('packetinfo', { id, method, length });
+        this.#logger(`Start receiving packet ${this.#method}(${id})`, length > 0x100000 ? `${(length / 0x100000).toFixed(2)}MB` : `${(length / 0x400).toFixed(2)}KB`);
         this._concatPacket(buffer.subarray(16));
     }
 
@@ -136,8 +149,9 @@ export class BlazeSocket extends EventEmitter {
         this.#timeout = setTimeout(() => {
             this.emit('close', new Error('timeout'));
         }, 30000);
-        this.#temp = Buffer.concat([this.#temp, buffer]);
-        if (this.#temp.length >= this.#packetSize) {
+        buffer.copy(this.#temp, this.#offset);
+        this.#offset += buffer.length;
+        if (this.#offset >= this.#packetSize) {
             this._readPacket();
             this.#temp = Buffer.alloc(0);
             this.#packetSize = 0;
@@ -146,89 +160,11 @@ export class BlazeSocket extends EventEmitter {
 
     private _readPacket() {
         clearTimeout(this.#timeout);
-        const id = this.#header.readInt16BE(11);
-        this.#logger('Success receive packet', `${this.#method}(${id})`, `${((this.#packetSize / 0x100000) / ((Date.now() - this.#timestamp) / 1000)).toFixed(2)}mb/s`);
-        this.emit(`packet:${id}`, Buffer.concat([this.#header, this.#temp]));
+        const id = this.#temp.readInt16BE(11);
+        this.emit('packet', { id, method: this.#method, length: this.#packetSize - 16, time: Date.now() - this.#timestamp });
+        // this.#logger('Successfully received packet', `${this.#method}(${id})`, `${((this.#packetSize / 0x100000) / ((Date.now() - this.#timestamp) / 1000)).toFixed(2)}mb/s`);
+        this.emit(`packet:${id}`, this.#temp);
         if (this.#method === 'UserSessions.UserUnauthenticated') { this.emit('close', new Error('user is unauthenticated')); return; }
-        this.#packetSize = 0;
-        this.#temp = Buffer.alloc(0);
-    }
-}
-
-let poolId = 0;
-export class BlazePool extends EventEmitter {
-    _sockets: BlazeSocket[] = [];
-    _available: BlazeSocket[] = [];
-    #queue = [];
-    #logger = Debugger(`blaze:pool-${poolId++}`);
-
-    constructor() {
-        super();
-        this.#logger('Pool created');
-    }
-
-    public add(authcode: string, getAuthcode?: () => Promise<string>) {
-        return new Promise<boolean>((resolve, reject) => {
-            const retry = () => {
-                getAuthcode?.().then((authcode) => this.add(authcode, getAuthcode)).catch(() => { setTimeout(retry, 5000); });
-            };
-            const socket = new BlazeSocket(authcode);
-            const close = (err: Error) => {
-                retry();
-                this.#logger(`Add socket [${socket.user}] fail`, err);
-                reject(err);
-            };
-            socket.on('packet', ({ id, method, length }) => this.emit('packet', { id, method, length, socket }));
-            socket.once('close', close);
-            socket.once('connect', () => {
-                socket.off('close', close);
-                this.#logger(`Socket [${socket.user}] added`);
-                this.emit('connect', { socket });
-                this._sockets.push(socket);
-                resolve(true);
-                this._release(socket);
-                socket.once('close', (err) => {
-                    retry();
-                    this.#logger(`Socket [${socket.user}] closed`);
-                    this.emit('close', { err, socket });
-                    if (this._sockets.includes(socket)) this._sockets.splice(this._sockets.indexOf(socket), 1);
-                    if (this._available.includes(socket)) this._available.splice(this._available.indexOf(socket), 1);
-                });
-            });
-        });
-    }
-
-    public send(packet: BlazePacket, decode?: boolean) {
-        return new Promise<Record<string, any>>((resolve, reject) => {
-            this._getSocket()
-                .then((socket) => {
-                    socket.send(packet, (err, data) => {
-                        this._release(socket);
-                        if (err) reject(err);
-                        else resolve(data);
-                    }, decode);
-                })
-                .catch(reject);
-        });
-    }
-
-    private _getSocket() {
-        return new Promise<BlazeSocket>((resolve) => {
-            if (this._available.length) {
-                resolve(this._available.shift());
-                return;
-            }
-            this.#logger('Waiting for socket');
-            this.#queue.push(resolve);
-        });
-    }
-
-    private _release(socket: BlazeSocket) {
-        if (!this._sockets.includes(socket)) return;
-        if (this.#queue.length) {
-            this.#queue.shift()(socket);
-        } else {
-            this._available.push(socket);
-        }
+        this.#temp = null;
     }
 }
