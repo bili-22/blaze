@@ -9,13 +9,10 @@ import { Blaze, BlazePacket, PacketType } from './Blaze';
 const ping = Buffer.alloc(16);
 ping[13] = PacketType.Ping;
 
-enum BlazeServerURL {
-    BF1 = 'https://winter15.gosredirector.ea.com:42230/redirector/getServerInstance',
-    BFV = 'https://spring18.gosredirector.ea.com:42230/redirector/getServerInstance',
-}
 enum BlazeServerREQ {
     BF1 = '<serverinstancerequest><name>battlefield-1-pc</name><connectionprofile>standardSecure_v4</connectionprofile></serverinstancerequest>',
     BFV = '<serverinstancerequest><name>battlefield-casablanca-pc</name><connectionprofile>standardSecure_v4</connectionprofile></serverinstancerequest>',
+    BF2042 = '<serverinstancerequest><name>bf-2021-pc-gen5</name><connectionprofile>standardSecure_v4</connectionprofile></serverinstancerequest>',
 }
 
 export class BlazeSocket extends EventEmitter {
@@ -32,7 +29,7 @@ export class BlazeSocket extends EventEmitter {
         super();
         this.#logger = Debugger(`blaze:temp-${authcode.slice(-4)}`);
         this.#logger('BlazeSocket created');
-        agent.post(BlazeServerURL[game])
+        agent.post('https://spring18.gosredirector.ea.com:42230/redirector/getServerInstance')
             .agent(new Agent({ secureOptions: crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT }))
             .disableTLSCerts()
             .set('Content-Type', 'application/xml')
@@ -73,6 +70,7 @@ export class BlazeSocket extends EventEmitter {
                     this.#closed = true;
                     this.#socket._destroy(err, () => { });
                     this.#logger(`Connection closed${err ? ` because ${err.message}` : ''}`);
+                    this.#tmpGameList.clear();
                     clearInterval(interval);
                     clearTimeout(this.#timeout);
                 });
@@ -80,19 +78,35 @@ export class BlazeSocket extends EventEmitter {
             .catch((err) => { this.#logger('Authentication failed', err); this.emit('close', err); });
     }
 
+    #tmpGameList: Map<bigint | number, Record<string, any>> = new Map();
     public send(packet: BlazePacket, callback?: (err: Error | null, data: any) => void, decode = true) {
         if (this.#closed) { callback?.(new Error('Connection closed'), null); return; }
         if (this.#id > 65535) this.#id = 1;
         this.#logger('Send packet', `${packet.method}(${this.#id})`);
         packet.id = this.#id++;
-        try {
-            const buffer = Blaze.encode(packet);
-            this.#socket.write(buffer);
-        } catch (error) {
-            callback(new Error('Packet encoding failed'), null);
-            return;
-        }
-        if (callback) {
+        if (packet.method === 'GameManager.getGameListSnapshot' && packet.data?._merge === true) {
+            delete packet.data._merge;
+            this.once(`packet:${packet.id}`, (packet) => {
+                const data = Blaze.decode(packet);
+                if (data.error || !data.data?.GLID) {
+                    Object.defineProperty(data.error, 'packet', { value: data });
+                    if (decode) {
+                        callback(data.error, null);
+                    } else {
+                        callback(null, packet);
+                    }
+                    if (data.error.message === 'ERR_AUTHENTICATION_REQUIRED') {
+                        this.emit('close', new Error('user is unauthenticated'));
+                    }
+                } else {
+                    this.#tmpGameList.set(data.data.GLID, {
+                        decode,
+                        callback,
+                        gameList: [],
+                    });
+                }
+            });
+        } else if (callback) {
             this.once(`packet:${packet.id}`, (packet) => {
                 if (decode) {
                     packet = Blaze.decode(packet);
@@ -111,6 +125,12 @@ export class BlazeSocket extends EventEmitter {
                     callback(null, packet);
                 }
             });
+        }
+        try {
+            const buffer = Blaze.encode(packet);
+            this.#socket.write(buffer);
+        } catch (error) {
+            callback(new Error('Packet encoding failed'), null);
         }
     }
 
@@ -161,9 +181,27 @@ export class BlazeSocket extends EventEmitter {
     private _readPacket() {
         clearTimeout(this.#timeout);
         const id = this.#temp.readInt16BE(11);
-        this.emit('packet', { id, method: this.#method, length: this.#packetSize - 16, time: Date.now() - this.#timestamp });
+        this.emit('packet', { id, method: this.#method, length: this.#packetSize - 16, time: Date.now() - this.#timestamp, buffer: this.#temp });
         // this.#logger('Successfully received packet', `${this.#method}(${id})`, `${((this.#packetSize / 0x100000) / ((Date.now() - this.#timestamp) / 1000)).toFixed(2)}mb/s`);
         this.emit(`packet:${id}`, this.#temp);
+        if (this.#method === 'GameManager.NotifyGameListUpdate') {
+            const packet = Blaze.decode(this.#temp);
+            if (this.#tmpGameList.has(packet.data.GLID)) {
+                const tmp = this.#tmpGameList.get(packet.data.GLID);
+                if (packet.data?.UPDT) {
+                    tmp.gameList = tmp.gameList.concat(packet.data.UPDT);
+                }
+                if (packet.data?.DONE) {
+                    if (tmp.gameList.length) packet.data['UPDT List<Struct>'] = tmp.gameList;
+                    this.#tmpGameList.delete(packet.data.GLID);
+                    if (tmp.decode) {
+                        tmp.callback(null, packet.data);
+                    } else {
+                        tmp.callback(null, Blaze.encode(packet));
+                    }
+                }
+            }
+        }
         if (this.#method === 'UserSessions.UserUnauthenticated') { this.emit('close', new Error('user is unauthenticated')); return; }
         this.#temp = null;
     }
