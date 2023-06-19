@@ -13,6 +13,7 @@ enum BlazeType {
     ObjectId,
     Float,
     Time,
+    Type12,
 }
 
 export enum PacketType {
@@ -148,6 +149,9 @@ export class Blaze {
                 case BlazeType.Float: {
                     return parseFloat();
                 }
+                case BlazeType.Type12: {
+                    return parseType12();
+                }
                 default: {
                     throw new Error(`未知类型 ${type.toString(16).padStart(2, '0')}`);
                 }
@@ -237,6 +241,16 @@ export class Blaze {
             const length = parseInteger() as number;
             offset += length;
             return buffer.subarray(offset - length, offset - 1).toString();
+        }
+
+        function parseType12() {
+            if (buffer[offset] === 1 && buffer[offset + 1] === 6) {
+                offset += 2;
+                const data = parseString();
+                offset++;
+                return data;
+            }
+            throw new Error(`未知类型(Type12) ${buffer[offset].toString(16).padStart(2, '0')}`);
         }
 
         function parseBlob() {
@@ -372,6 +386,10 @@ export class Blaze {
                     value = writeFloat(value);
                     break;
                 }
+                case 'Type12': {
+                    value = writeType12String(value);
+                    break;
+                }
                 default: {
                     throw new Error(`Unknown Type ${type}`);
                 }
@@ -445,6 +463,13 @@ export class Blaze {
             }
             text = `${Buffer.from(text).toString('hex')}00`;
             writeInteger(text.length / 2); // length
+            hex += text;
+        }
+
+        function writeType12String(text: string) {
+            hex += '0106';
+            text = `${Buffer.from(text).toString('hex')}0000`;
+            writeInteger(text.length / 2 - 1); // length
             hex += text;
         }
 

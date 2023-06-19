@@ -23,6 +23,7 @@ export class BlazeSocket extends EventEmitter {
     user: string;
     personaId: number;
     #closed = false;
+    _createAt = Date.now();
 
     constructor(authcode: string, game = 'BF1') {
         if (!authcode) throw new Error('No authcode provided');
@@ -66,6 +67,8 @@ export class BlazeSocket extends EventEmitter {
                 this.#logger = Debugger(`blaze:${this.user}`);
                 this.emit('connect', ({ host: this.host, user: this.user, personaId: this.personaId }));
                 const interval = setInterval(() => { this.#socket.write(ping); }, 30000);
+                const disconnectTimeout = setTimeout(() => { this.emit('close', 'Timeout'); }, 90000);
+                this.#socket.on('data', () => { disconnectTimeout.refresh(); });
                 this.once('close', (err) => {
                     this.#closed = true;
                     this.#socket._destroy(err, () => { });
