@@ -1,16 +1,14 @@
 {
   "compilerOptions": {
-    "target": "es2020",
-    "module": "commonjs",
-    "esModuleInterop": true,
-    "moduleResolution": "node",
-    "sourceMap": false,
+    "outDir": "dist",
+    "target": "ESNext",
+    "module": "CommonJS",
     "declaration": true,
-    "strictBindCallApply": true,
-    "experimentalDecorators": true,
+    "composite": false,
     "incremental": true,
-    "resolveJsonModule": true,
-    "outDir": "dist"
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "moduleResolution": "node"
   },
   "include": ["src"]
 }

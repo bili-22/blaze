@@ -3,28 +3,28 @@
   "version": "0.1.1",
   "description": "Battlefield 1 Blaze",
   "main": "dist/index.js",
-  "author": "",
+  "author": "bili-22 <22musume@gmail.com>",
   "license": "ISC",
+  "scripts": {
+    "test": "tsc && node dist/BlazeSocket2.js"
+  },
   "dependencies": {
     "debug": "^4.3.4",
     "superagent": "^8.0.3"
   },
   "devDependencies": {
-    "@hydrooj/utils": "^1.4.4",
-    "@minatojs/core": "^2.0.1",
-    "@minatojs/driver-mongo": "^2.0.0",
     "@types/node": "^18.11.9",
     "@types/superagent": "^4.1.15",
     "@types/superagent-proxy": "^3.0.0",
     "@typescript-eslint/eslint-plugin": "^5.43.0",
     "@typescript-eslint/parser": "^5.43.0",
-    "esbuild-wasm": "^0.15.18",
     "eslint": "^8.28.0",
     "eslint-config-airbnb-base": "^15.0.0",
     "eslint-config-airbnb-typescript": "^17.0.0",
     "eslint-plugin-import": "^2.26.0",
     "eslint-plugin-simple-import-sort": "^8.0.0",
-    "minato": "^2.0.1",
     "typescript": "^4.9.3"
-  }
+  },
+  "repository": "https://github.com/bili-22/blaze.git",
+  "private": true
 }

@@ -76,8 +76,6 @@ export class Blaze {
             };
         }
 
-        const tagMap = new Map<string, any>();
-
         const data = parseStruct() as Record<string, any>;
         if (data.ERRC) {
             const component = data.ERRC & 0xFFFF;
@@ -93,11 +91,7 @@ export class Blaze {
             type: PacketType[type],
             id,
             length,
-            data: new Proxy(data, {
-                get(target, prop, receiver) {
-                    return Reflect.has(target, prop) ? Reflect.get(target, prop, receiver) : tagMap.get(prop.toString().padEnd(4, ' '));
-                },
-            }),
+            data,
         };
 
         function decodeTag(hex: string) {
@@ -176,8 +170,6 @@ export class Blaze {
                     : tag.trimEnd();
                 const result = parseBlock(type);
                 data[name] = result;
-                if (typed && !data[tag.trimEnd()]) Object.defineProperty(data, tag.trimEnd(), { value: result });
-                if (!tagMap.has(tag)) tagMap.set(tag, result);
             }
             offset++;
             return data;
@@ -193,8 +185,6 @@ export class Blaze {
             const name = typed ? `${tag} ${BlazeType[type]}` : tag.trimEnd();
             const result = parseBlock(type);
             data[name] = result;
-            if (typed && !data[tag.trimEnd()]) Object.defineProperty(data, tag.trimEnd(), { value: result });
-            if (!tagMap.has(tag)) tagMap.set(tag, result);
             return data;
         }
 
