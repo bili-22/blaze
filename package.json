@@ -1,9 +1,9 @@
 {
   "name": "blaze",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Battlefield 1 Blaze",
   "main": "dist/index.js",
-  "author": "bili-22 <22musume@gmail.com>",
+  "author": "bili-22 <bili@bili22.me>",
   "license": "ISC",
   "scripts": {
     "test": "tsc && node dist/BlazeSocket2.js"
@@ -25,6 +25,5 @@
     "eslint-plugin-simple-import-sort": "^8.0.0",
     "typescript": "^4.9.3"
   },
-  "repository": "https://github.com/bili-22/blaze.git",
-  "private": true
+  "repository": "https://github.com/bili-22/blaze.git"
 }
