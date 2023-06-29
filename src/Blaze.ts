@@ -1,4 +1,4 @@
-import { Commands, Components, Errors, Methods } from './Method';
+import { Command2Hex, ErrorMessage, ErrorName, Message2Hex, Method } from './Method';
 
 enum BlazeType {
     Integer,
@@ -33,24 +33,9 @@ export interface BlazePacket {
     component?: number;
     command?: number;
     id?: number;
-    type?: string;
+    type?: keyof typeof PacketType;
     data?: Record<string, any>;
-    error?: BlazeError
-}
-
-export class BlazeError extends Error {
-    public component: string;
-    public description: number;
-    public details: string;
-    constructor({
-        component, name, description, details,
-    }) {
-        super(name);
-        this.name = 'BlazeError';
-        this.component = component;
-        if (description) this.description = description;
-        if (details) this.details = details;
-    }
+    error?: { error: string, description: string }
 }
 
 export class Blaze {
@@ -61,34 +46,37 @@ export class Blaze {
         const component = buffer.readInt16BE(6);
         const command = buffer.readInt16BE(8);
         const id = buffer.readInt16BE(11);
-        let method: string;
+        let method: Method;
         if (type === PacketType.Ping || type === PacketType.Pong) {
             method = 'KeepAlive';
         } else {
-            method = Components[component] ?? component;
-            method += '.';
-            method += Commands[Components[component]]?.[type === PacketType.Message ? 'Message' : 'Command']?.[command] || command;
+            method = `${component}.${command}` as Method;
+            method = (type === PacketType.Message ? Message2Hex[method] : Command2Hex[method]) ?? method;
         }
 
         if (buffer.length === 16) {
             return {
-                method, type: PacketType[type], id, length,
+                method, type: PacketType[type] as any, id, length,
             };
         }
-
         const data = parseStruct() as Record<string, any>;
-        if (data.ERRC) {
-            const component = data.ERRC & 0xFFFF;
-            let code = data.ERRC >> 16;
+        const errorCode = typed ? data['ERRC Integer'] : data.ERRC;
+        if (errorCode) {
+            const component = errorCode & 0xFFFF;
+            let code = errorCode >> 16;
             if (code >= 16384) code -= 16384;
-            const error = new BlazeError(Errors[`${component}.${code}`] || { component: Components[component] || component, name: code });
+            const error = {
+                error: ErrorName[`${component}.${code}`],
+                description: ErrorMessage[`${component}.${code}`],
+                component,
+            };
             return {
-                method, type: PacketType[type], id, length, error,
+                method, type: PacketType[type] as any, id, length, error,
             };
         }
         return {
             method,
-            type: PacketType[type],
+            type: PacketType[type] as any,
             id,
             length,
             data,
@@ -295,12 +283,13 @@ export class Blaze {
     }
     /* eslint-disable */
 
-    static encode(packet) {
+    static encode(packet: BlazePacket) {
         const header = Buffer.alloc(16);
-        // Component
-        header.writeUInt16BE(Methods[packet.method]?.[0] ?? +packet.method.split('.')[0], 6);
+        // Method
+        const method = (Message2Hex[packet.method] || Command2Hex[packet.method] || packet.method).split('.');
+        header.writeUInt16BE(method[0], 6);
         // Command
-        header.writeUInt16BE(Methods[packet.method]?.[1] ?? +packet.method.split('.')[1], 8);
+        header.writeUInt16BE(method[1], 8);
         // Id
         header.writeUInt16BE(packet.id, 11);
         // Type
@@ -310,7 +299,7 @@ export class Blaze {
         writeStruct(packet.data || {}, false);
         const data = Buffer.from(hex, 'hex');
         // Length
-        if (packet.type === 96) {
+        if (packet.type === 'Error') {
             header.writeUInt16BE(data.length, 4);
         } else {
             header.writeUInt32BE(data.length, 0);

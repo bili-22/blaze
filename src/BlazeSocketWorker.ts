@@ -48,7 +48,7 @@ async function main() {
     socket.write(Blaze.encode({ method: 'Authentication.login', data: { 'AUTH String': authCode, 'EXTB Blob': '', 'EXTI Integer': 0 } }));
 
     const { DSNM: name, PID: personaId } = await new Promise<Record<string, any>>((resolve, reject) => {
-        socket.once('data', (data) => (data[13] === 0x40 ? socket.once('data', (data2) => resolve(Blaze.decode(Buffer.concat([data, data2])).data)) : reject(new BlazeError('登录失败'))));
+        socket.once('data', (data) => (data[13] === 0x40 ? socket.once('data', (data2) => resolve(Blaze.decode(Buffer.concat([data, data2]), false).data)) : reject(new BlazeError('登录失败'))));
     });
 
     parentPort.postMessage({ name, personaId, address: `${host}:${port}` });

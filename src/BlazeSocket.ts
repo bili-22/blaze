@@ -9,9 +9,10 @@ export class BlazeSocket extends EventEmitter {
     #worker: Worker;
     #idMap = new Map<number, [(value: any) => void, (reason: any) => void]>();
 
-    name: string;
-    personaId: number;
-    address: string;
+    _user: string;
+    _personaId: number;
+    _address: string;
+    _createAt = new Date();
 
     constructor(authCode: string, game: Game = 'BF1') {
         super();
@@ -23,16 +24,16 @@ export class BlazeSocket extends EventEmitter {
         this.#worker.once('exit', (code) => code === 0 && this.emit('close'));
 
         this.#worker.once('message', ({ name, personaId, address }) => {
-            this.name = name;
-            this.personaId = personaId;
-            this.address = address;
+            this._user = name;
+            this._personaId = personaId;
+            this._address = address;
             this.emit('connect', { name, personaId, address });
             this.#worker.on('message', ([id, data]: [number, BlazePacket | Error]) => {
                 const [resolve, reject] = this.#idMap.get(id);
                 if (data instanceof Error) {
                     this.#idMap.delete(id);
                     reject(data);
-                } else if (data.error?.message === 'ERR_AUTHENTICATION_REQUIRED') {
+                } else if (data.error?.error === 'ERR_AUTHENTICATION_REQUIRED') {
                     this.emit('close', data.error);
                     this.#worker.terminate();
                 } else {
@@ -44,7 +45,7 @@ export class BlazeSocket extends EventEmitter {
     }
 
     send(packet: { method: string, data: Record<string, any> }, typed = false, raw = false) {
-        return new Promise<void>((resolve, reject) => {
+        return new Promise<BlazePacket>((resolve, reject) => {
             if (this.#id > 65535) this.#id = 1;
             const id = this.#id++;
             (packet as any).id = id;

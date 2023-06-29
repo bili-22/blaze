@@ -1,12 +1,17 @@
 {
-  "name": "blaze",
-  "version": "0.2.0",
-  "description": "Battlefield 1 Blaze",
+  "name": "@bili22/blaze",
+  "version": "0.2.2",
+  "description": "Blaze Toolbox",
   "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
   "author": "bili-22 <bili@bili22.me>",
   "license": "ISC",
   "scripts": {
-    "test": "tsc && node dist/BlazeSocket2.js"
+    "prepublish": "yarn build",
+    "build": "rmdir /s /q dist & tsc",
+    "test": "yarn build && node dist/BlazeSocket.js"
   },
   "dependencies": {
     "debug": "^4.3.4",
@@ -15,7 +20,6 @@
   "devDependencies": {
     "@types/node": "^18.11.9",
     "@types/superagent": "^4.1.15",
-    "@types/superagent-proxy": "^3.0.0",
     "@typescript-eslint/eslint-plugin": "^5.43.0",
     "@typescript-eslint/parser": "^5.43.0",
     "eslint": "^8.28.0",
