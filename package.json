@@ -1,6 +1,6 @@
 {
   "name": "@bili22/blaze",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Blaze Toolbox",
   "main": "dist/index.js",
   "files": [

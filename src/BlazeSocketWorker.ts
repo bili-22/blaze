@@ -118,7 +118,7 @@ async function main() {
                     continue;
                 }
 
-                packet.data['UPDT List<Struct>'].forEach((game: Record<string, any>) => gameListMap.get(gameListId)![1].push(game));
+                packet.data['UPDT List<Struct>']?.forEach((game: Record<string, any>) => gameListMap.get(gameListId)![1].push(game));
 
                 if (!packet.data['DONE Integer']) {
                     tmp = null;
