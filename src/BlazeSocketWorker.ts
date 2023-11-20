@@ -96,7 +96,9 @@ async function main() {
             idle = false;
             length = buf.readInt32BE(0) + buf.readInt16BE(4) + 16;
             id = buf.readInt16BE(11);
-            if (idMap.has(id) || buf.readInt32BE(6) === 0x0004_00c9) tmp = Buffer.allocUnsafe(length);
+            const method = buf.readInt32BE(6)
+            if (buf[13] === 0x40 && method === 0x7802_0009) throw new BlazeError('退出登录');
+            if (idMap.has(id) || method === 0x0004_00c9) tmp = Buffer.allocUnsafe(length);
         }
 
         if (tmp) buf.copy(tmp, pos);
